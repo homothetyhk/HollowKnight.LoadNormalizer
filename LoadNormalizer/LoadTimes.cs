@@ -7,10 +7,20 @@ namespace LoadNormalizer
 {
     public static class LoadTimes
     {
-        // Not all scenes have been tested. This seems like a reasonable average bound.
-        public static readonly double defaultLoad = 1.25;
+        public static void Setup()
+        {
+            defaultLoad = LoadNormalizer.GS.defaultLoadTime;
+            if (defaultLoad <= 0f)
+            {
+                LoadNormalizer.GS.defaultLoadTime = defaultLoad = 1.2f;
+            }
+        }
+
+        public static float defaultLoad;
 
         // too lazy to package this into a resources file
+        // disabled -- was not terribly useful
+        /*
         public static readonly Dictionary<string, double> loadTimes = new Dictionary<string, double>
         {
             {
@@ -1230,5 +1240,6 @@ namespace LoadNormalizer
                 1.00390625
             }
         };
+        */
     }
 }
