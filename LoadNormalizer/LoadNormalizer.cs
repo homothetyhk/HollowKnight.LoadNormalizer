@@ -1,16 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Modding;
-using UnityEngine;
-using System.IO;
-using MonoMod.RuntimeDetour;
-using MonoMod;
-using MonoMod.Cil;
+﻿using Modding;
 using System.Collections;
-using System.Reflection;
-using Mono.Cecil.Cil;
+using UnityEngine;
 
 namespace LoadNormalizer
 {
@@ -20,94 +10,104 @@ namespace LoadNormalizer
 
         public static LoadNormalizer instance;
         public static StreamWriter writer;
-        public static string lastSceneLoaded;
-        public static double lastSceneLoadStart;
-        public static bool ignoreNextLoadFinish;
+        public static float? loadStart;
+        public static float? LoadTime { get => loadStart.HasValue ? Time.realtimeSinceStartup - loadStart.Value : null; }
 
         public override void Initialize()
         {
             instance = this;
             LoadTimes.Setup();
-            On.GameManager.BeginSceneTransition += GetLoadStart;
-            On.GameManager.EnterHero += GetLoadEnd;
+            On.SceneLoad.RecordBeginTime += RecordBeginFetchTime;
+            On.SceneLoad.BeginRoutine += NormalizeSceneFetchTime;
+            On.SceneAdditiveLoadConditional.LoadAll += NormalizeBossLoads;
         }
 
-        private void GetLoadEnd(On.GameManager.orig_EnterHero orig, GameManager self, bool additiveGateSearch)
+        public void Unload()
         {
-            if (IgnoreLoad() || ignoreNextLoadFinish)
-            {
-                ignoreNextLoadFinish = false;
-                orig(self, additiveGateSearch);
-                return;
-            }
-
-            LogLoad(lastSceneLoaded, Time.realtimeSinceStartup - lastSceneLoadStart);
-            GameManager.instance.StartCoroutine(WaitForNormalizedLoad(lastSceneLoaded, () => orig(self, additiveGateSearch)));
+            On.SceneLoad.RecordBeginTime -= RecordBeginFetchTime;
+            On.SceneLoad.BeginRoutine -= NormalizeSceneFetchTime;
+            On.SceneAdditiveLoadConditional.LoadAll -= NormalizeBossLoads;
         }
 
-        private void GetLoadStart(On.GameManager.orig_BeginSceneTransition orig, GameManager self, GameManager.SceneLoadInfo info)
-        {
-            lastSceneLoaded = info.SceneName;
-            if (!IgnoreLoad())
-            {
-                lastSceneLoadStart = Time.realtimeSinceStartup;
-            }
-            orig(self, info);
-        }
-
-        public override string GetVersion()
-        {
-            return LoadTimes.defaultLoad.ToString();
-        }
-
-        private bool IgnoreLoad()
-        {
-            bool hazardRespawningHero = (bool)ReflectionHelper.GetField<GameManager, bool>(GameManager.instance, "hazardRespawningHero");
-            if (hazardRespawningHero)
-            {
-                return true;
-            }
-            if (GameManager.instance.RespawningHero || GameManager.instance.entryGateName == "dreamGate")
-            {
-                ignoreNextLoadFinish = true;
-                return true;
-            }
-            return false;
-        }
-
-        public IEnumerator WaitForNormalizedLoad(string sceneName, Action finish)
-        {
-            if (Time.realtimeSinceStartup - lastSceneLoadStart > LoadTimes.defaultLoad)
-            {
-                LogWarn($"Load for {sceneName} exceded standard load time by {Time.realtimeSinceStartup - lastSceneLoadStart}");
-            }
-
-            yield return new WaitWhile(() => Time.realtimeSinceStartup - lastSceneLoadStart < LoadTimes.defaultLoad);
-            finish();
-        }
-
-        public static void LogLoad(string sceneName, double loadTime)
+        public static void LogLoad(string sceneName, SceneLoad load)
         {
             if (writer == null)
             {
-                if (new FileInfo(Path.Combine(Application.persistentDataPath, "loadTimes.txt")) is FileInfo info
+                if (new FileInfo(Path.Combine(Application.persistentDataPath, "loadTimes.yaml")) is FileInfo info
                     && info.Exists && info.Length > 1000000)
                 {
                     info.Delete();
                 }
 
-                writer = new StreamWriter(Path.Combine(Application.persistentDataPath, "loadTimes.txt"), append: true)
+                writer = new StreamWriter(Path.Combine(Application.persistentDataPath, "loadTimes.yaml"), append: true)
                 {
                     AutoFlush = true
                 };
             }
-            writer.WriteLine($"{sceneName}: {loadTime}");
+            writer.WriteLine("- ");
+            writer.WriteLine($" sceneName: {sceneName}");
+            for (SceneLoad.Phases p = 0; p <= SceneLoad.Phases.LoadBoss; p++)
+            {
+                float? d = load.GetDuration(p);
+                if (d.HasValue)
+                    writer.WriteLine($" {p}: {d.Value}");
+            }
         }
 
-        public void Unload()
+        private static IEnumerator NormalizeBossLoads(On.SceneAdditiveLoadConditional.orig_LoadAll orig)
         {
-            On.GameManager.BeginSceneTransition -= GetLoadStart;
-            On.GameManager.EnterHero -= GetLoadEnd;
+            float bossLoadStart = Time.realtimeSinceStartup;
+            yield return orig();
+
+            float loadTime = Time.realtimeSinceStartup - bossLoadStart;
+            if (loadTime < LoadTimes.DefaultBossLoad)
+            {
+                yield return new WaitForSecondsRealtime(LoadTimes.DefaultBossLoad - loadTime);
+            }
+            else
+            {
+                float diff = loadTime - LoadTimes.DefaultBossLoad;
+                if (diff > 0.05f)
+                {
+                    instance.LogWarn($"Boss load exceeded standard load time by {diff}.");
+                }
+            }
+        }
+
+        private static void RecordBeginFetchTime(On.SceneLoad.orig_RecordBeginTime orig, SceneLoad self, SceneLoad.Phases phase)
+        {
+            if (phase == SceneLoad.Phases.Fetch)
+            {
+                loadStart = Time.realtimeSinceStartup;
+            }
+            orig(self, phase);
+        }
+
+        private static IEnumerator NormalizeSceneFetchTime(On.SceneLoad.orig_BeginRoutine orig, SceneLoad self)
+        {
+            loadStart = null;
+            self.Finish += () =>
+            {
+                LogLoad(self.TargetSceneName, self);
+                float diff = self.GetDuration(SceneLoad.Phases.Fetch).Value - LoadTimes.DefaultLoad;
+                if (diff > 0.05f)
+                {
+                    instance.LogWarn($"Load for {self.TargetSceneName} exceded standard load time by {diff}.");
+                };
+            };
+
+            IEnumerator routine = orig(self);
+            bool MoveNext()
+            {
+                self.IsActivationAllowed = LoadTime.HasValue && LoadTime > LoadTimes.DefaultLoad;
+                return routine.MoveNext();
+            }
+            while (MoveNext()) yield return routine.Current;
+        }
+
+        public override string GetVersion()
+        {
+            return $"{LoadTimes.DefaultLoad.ToString("G", System.Globalization.CultureInfo.InvariantCulture)}; {LoadTimes.DefaultBossLoad.ToString("G", System.Globalization.CultureInfo.InvariantCulture)}";
         }
 
         void IGlobalSettings<GlobalSettings>.OnLoadGlobal(GlobalSettings s)
