@@ -31,27 +31,31 @@ namespace LoadNormalizer
 
         public static void LogLoad(string sceneName, SceneLoad load)
         {
-            if (writer == null)
+            try
             {
-                if (new FileInfo(Path.Combine(Application.persistentDataPath, "loadTimes.yaml")) is FileInfo info
-                    && info.Exists && info.Length > 1000000)
+                if (writer == null)
                 {
-                    info.Delete();
-                }
+                    if (new FileInfo(Path.Combine(Application.persistentDataPath, "loadTimes.yaml")) is FileInfo info
+                        && info.Exists && info.Length > 1000000)
+                    {
+                        info.Delete();
+                    }
 
-                writer = new StreamWriter(Path.Combine(Application.persistentDataPath, "loadTimes.yaml"), append: true)
+                    writer = new StreamWriter(Path.Combine(Application.persistentDataPath, "loadTimes.yaml"), append: true)
+                    {
+                        AutoFlush = true
+                    };
+                }
+                writer.WriteLine("- ");
+                writer.WriteLine($" sceneName: {sceneName}");
+                for (SceneLoad.Phases p = 0; p <= SceneLoad.Phases.LoadBoss; p++)
                 {
-                    AutoFlush = true
-                };
+                    float? d = load.GetDuration(p);
+                    if (d.HasValue)
+                        writer.WriteLine($" {p}: {d.Value}");
+                }
             }
-            writer.WriteLine("- ");
-            writer.WriteLine($" sceneName: {sceneName}");
-            for (SceneLoad.Phases p = 0; p <= SceneLoad.Phases.LoadBoss; p++)
-            {
-                float? d = load.GetDuration(p);
-                if (d.HasValue)
-                    writer.WriteLine($" {p}: {d.Value}");
-            }
+            catch (Exception e) { instance.LogError($"Error loading load info:\n{e}"); }
         }
 
         private static IEnumerator NormalizeBossLoads(On.SceneAdditiveLoadConditional.orig_LoadAll orig)
