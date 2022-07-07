@@ -12,6 +12,7 @@ namespace LoadNormalizer
         public static StreamWriter writer;
         public static float? loadStart;
         public static float? LoadTime { get => loadStart.HasValue ? Time.realtimeSinceStartup - loadStart.Value : null; }
+        private static bool ignoreNextGMLoadedBoss;
 
         public override void Initialize()
         {
@@ -20,6 +21,7 @@ namespace LoadNormalizer
             On.SceneLoad.RecordBeginTime += RecordBeginFetchTime;
             On.SceneLoad.BeginRoutine += NormalizeSceneFetchTime;
             On.SceneAdditiveLoadConditional.LoadAll += NormalizeBossLoads;
+            On.GameManager.LoadedBoss += InterceptOnLoadedBoss;
         }
 
         public void Unload()
@@ -27,6 +29,7 @@ namespace LoadNormalizer
             On.SceneLoad.RecordBeginTime -= RecordBeginFetchTime;
             On.SceneLoad.BeginRoutine -= NormalizeSceneFetchTime;
             On.SceneAdditiveLoadConditional.LoadAll -= NormalizeBossLoads;
+            On.GameManager.LoadedBoss -= InterceptOnLoadedBoss;
         }
 
         public static void LogLoad(string sceneName, SceneLoad load)
@@ -62,10 +65,11 @@ namespace LoadNormalizer
         {
             float bossLoadStart = Time.realtimeSinceStartup;
             yield return orig();
-
             float loadTime = Time.realtimeSinceStartup - bossLoadStart;
             if (loadTime < LoadTimes.DefaultBossLoad)
             {
+                GameManager.instance.LoadedBoss(); // prevent weird effects from delaying the GameManager.OnLoadedBoss event.
+                ignoreNextGMLoadedBoss = true;
                 yield return new WaitForSecondsRealtime(LoadTimes.DefaultBossLoad - loadTime);
             }
             else
@@ -107,6 +111,16 @@ namespace LoadNormalizer
                 return routine.MoveNext();
             }
             while (MoveNext()) yield return routine.Current;
+        }
+
+        private void InterceptOnLoadedBoss(On.GameManager.orig_LoadedBoss orig, GameManager self)
+        {
+            if (ignoreNextGMLoadedBoss)
+            {
+                ignoreNextGMLoadedBoss = false;
+                return;
+            }
+            orig(self);
         }
 
         public override string GetVersion()
